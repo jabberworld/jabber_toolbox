@@ -1,0 +1,15 @@
+[Unit]
+Description=Jabber Toolbox XMPP bot component
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opencode
+WorkingDirectory=/home/opencode/workspace/jabber_toolbox
+ExecStart=/usr/bin/python3 /home/opencode/workspace/jabber_toolbox/toolbox.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
