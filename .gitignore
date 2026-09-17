@@ -1,0 +1,13 @@
+# Config with credentials
+config.ini
+
+# Bot databases (user data)
+*.sqlite3
+
+# Python
+__pycache__/
+
+# Tooling
+.opencode/
+.cursor/
+.windsurfrules
