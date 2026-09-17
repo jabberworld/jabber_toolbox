@@ -1,0 +1,11 @@
+[server]
+JID = service2.example.com
+Host = 127.0.0.1
+Port = 5275
+Password = changeme
+
+[settings]
+; Hours offset from UTC (e.g. 3 for Moscow, -5 for New York).
+Timezone = 0
+; Length of first line used for auto-generated title (default 20).
+TitleDefaultLength = 20
