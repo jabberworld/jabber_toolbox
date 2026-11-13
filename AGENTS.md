@@ -35,7 +35,7 @@ python3 selftest.py               # автономные тесты (без XMPP
 | `config.ini` / `config.ini.example` | Настройки соединения и общие параметры. |
 | `selftest.py` | Автономные проверки всех ботов и ядра (запуск без сервера). |
 | `requirements.txt` | Зависимости (`slixmpp==1.10.0`). |
-| `*.sqlite3` | БД ботов, создаются автоматически (`note`, `reminder`, `shorty`, `whois_cache`). |
+| `*.sqlite3` | БД ботов, создаются автоматически (`note`, `reminder`, `shorty`, `whois_cache`, `piwigo`). |
 
 ---
 
@@ -77,10 +77,21 @@ class Bot:
     def __init__(self):
         self.jid = ''
 
+    def help_reply(self, jid):
+        # ответ на пустой ввод/help; по умолчанию HELP, может быть Reply
+        return self.HELP
+
     async def handle(self, text, ctx):
-        # ctx = {'from': JID, 'to': JID}; возвращает строку-ответ
+        # ctx = {'from': JID, 'to': JID}; возвращает str или Reply
         raise NotImplementedError()
 ```
+
+- `Reply(str)` — строка-ответ с необязательными `responses` (пары
+  `(value, label)`) для кнопок XEP-0439 (`urn:xmpp:tmp:quick-response`).
+  Ядро (`Toolbox._add_quick`) добавляет `<response/>` к исходящему сообщению,
+  дедуплицируя по `value`/`label`; текст `<body>` не меняется.
+- `numbered(count)` — пары `(N, N)` для первых `QUICK_MAX_ITEMS = 10` пунктов.
+- `label` = короткая команда, если есть, иначе номер пункта.
 
 Загрузчик `load_plugins(directory)`:
 - импортирует каждый `*.py`, не начинающийся с `_`;
@@ -115,9 +126,11 @@ class Bot:
 3. Определяется бот по адресату (`_bot_for`).
 4. Если бота нет — ответ списком сервисов `TOOLBOX_NAME v...` и завершение.
 5. Отправляется receipt (`_ack_receipt`), формируется `ctx`.
-6. Слать `composing` (XEP-0085) → `await bot.handle(body, ctx)`.
+6. Слать `composing` (XEP-0085) → `await bot.handle(body, ctx)`;
+   при пустом body — `bot.help_reply(bare JID)`.
 7. Ошибка бота ловится; ответ — `Internal error: <...>`.
 8. Отправляется reply: body = результат (или `bot.HELP` при пустом),
+   `_add_quick` добавляет `<response/>` из `out.responses` (XEP-0439),
    chat state `active`, `request_receipt=True`.
 
 ### 5. Presence и статусы
@@ -153,6 +166,8 @@ class Bot:
   note/reminder, `_local_tz` в reminder).
 - Времена в БД хранятся в UTC (Unix-timestamp).
 - Не добавлять лишних комментариев в код; следовать существующему стилю.
+- После любых изменений в проекте — делать git-коммит (осмысленное сообщение;
+  не коммитить секреты и файлы БД/конфиг с паролем).
 
 <!-- CODE_BRAIN_MANDATORY -->
 ## Code Brain MCP - Mandatory when loaded

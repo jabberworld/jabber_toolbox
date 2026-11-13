@@ -60,11 +60,12 @@ JID-сущность вида `NAME@<домен компонента>` (напр
 | `plugins/shorty.py` | Бот-сокращатель ссылок. |
 | `plugins/whois.py` | Бот WHOIS по доменам и IP. |
 | `plugins/whoip.py` | Бот «домен→IP→WHOIS». |
+| `plugins/piwigo.py` | Бот загрузки изображений в галерею Piwigo (Piwigo Web API). |
 | `plugins/note.py` | Бот личных заметок. |
 | `plugins/reminder.py` | Бот напоминаний. |
 | `config.ini` / `config.ini.example` | Конфигурация соединения и настроек. |
 | `selftest.py` | Автономный набор проверок. |
-| `note.sqlite3`, `reminder.sqlite3`, `shorty.sqlite3`, `whois_cache.sqlite3` | Файлы БД, создаются автоматически при первом обращении бота. |
+| `note.sqlite3`, `reminder.sqlite3`, `shorty.sqlite3`, `whois_cache.sqlite3`, `piwigo.sqlite3` | Файлы БД, создаются автоматически при первом обращении бота. |
 
 ---
 
@@ -198,6 +199,7 @@ for bot in load_plugins(os.path.join(BASE_DIR, 'plugins')):
   - `vcard-temp`
   - `urn:xmpp:time`
   - `urn:xmpp:receipts`
+  - `urn:xmpp:tmp:quick-response`
   - `http://jabber.org/protocol/chatstates`
 - item к корню: `disco.add_item(jid=bot.jid, name=..., ijid=root)` — так боты
   перечисляются в `disco#items` корня.
@@ -328,7 +330,8 @@ Run one of my ad-hoc commands to add a bot to your roster, or add a bot JID dire
 
 #### Шаг 3. Обработка
 
-1. Если исходное `body` пусто — `out = bot.HELP`.
+1. Если исходное `body` пусто — `out = bot.help_reply(<bare JID>)`
+   (по умолчанию `HELP`, у диалоговых ботов — `Reply` с кнопками XEP-0439).
 2. Иначе:
    - `_ack_receipt(bot, msg)` — если в сообщении был `request_receipt`, бот
      отправляет подтверждение (см. 4.10);
@@ -340,6 +343,8 @@ Run one of my ad-hoc commands to add a bot to your roster, or add a bot JID dire
    `'Internal error: <тип/текст>'`.
 4. Ответ — reply:
    - `body = out if out else bot.HELP`;
+   - `_add_quick(reply, out)` — добавляет `<response/>` из `out.responses`
+     (XEP-0439, см. 6.6);
    - `chat_state='active'`;
    - `request_receipt=True`;
    - отправка `reply.send()`.
@@ -528,6 +533,33 @@ class Bot:
 
 Ответы на русском (текст выше). Справки и технические строки частично на
 английском (наследие). Пустой ввод → `HELP`.
+
+### 6.6 Быстрые ответы (XEP-0439)
+
+Диалоговые боты (note, reminder, piwigo, shorty) добавляют к ответам кнопки
+быстрого ответа согласно XEP-0439 (namespace `urn:xmpp:tmp:quick-response`).
+Используется только механизм `<response>`: при выборе клиент отправляет текст
+`value` обычным `<body>`, поэтому боты остаются текстово-командными.
+
+- `plugins.Reply` — подкласс `str`, хранящий `responses` (список пар
+  `(value, label)`); совместим со старым кодом, ожидающим строку.
+- `Bot.help_reply(jid)` — ответ на пустой ввод и `help`/`?`; базовая
+  реализация возвращает `HELP`, боты-диалоги — `Reply` с кнопками.
+- `plugins.numbered(count)` — пары `(N, N)` для первых
+  `QUICK_MAX_ITEMS = 10` пунктов пользовательских списков.
+- Ядро (`Toolbox._add_quick`) добавляет к исходящему сообщению элементы
+  `<response value="..." label="..."/>`, дедуплицируя по `value` и `label`
+  (требование XEP); текст `<body>` не меняется и по-прежнему перечисляет все
+  варианты (business rule XEP).
+- `label` = короткая команда (`list`, `arch`, `title`, `host`, ...), если она
+  поддерживается; иначе — номер пункта (`3`, `1`, ...). Для пользовательских
+  списков (заметки, напоминания, поиск, альбомы, движки) рендерятся первые
+  10 пунктов; фиксированные меню (пикер, относительное время, срок хранения,
+  регистрация, загрузка) — целиком.
+- `urn:xmpp:tmp:quick-response` объявляется в disco#info каждого бота.
+
+Статус XEP — Deferred (экспериментальный); поддержка реализована как
+необязательное расширение и не влияет на клиентов без XEP-0439.
 
 ---
 
@@ -1408,7 +1440,75 @@ WHERE remind_at <= now AND expires_at > now AND delivered_at IS NULL
 
 ---
 
-## 16. Фоновые задачи
+## 16. Бот piwigo
+
+Файл: `plugins/piwigo.py`. Класс `Piwigo`. Загружает изображения по ссылке
+(например, из XEP-0363 HTTP Upload) в галерею Piwigo пользователя через
+Piwigo Web API (`/ws.php?format=json`).
+
+```python
+NAME = 'piwigo'
+DESCRIPTION = ('Загрузка изображений в галерею Piwigo. '
+               'Отправьте ссылку на картинку (например, из HTTP '
+               'Upload) - бот предложит имя файла и альбом.')
+HELP = ('Piwigo bot - загрузка изображений в галерею Piwigo.\n'
+        'Отправьте ссылку на изображение ...\n'
+        'Команды:\n'
+        '  reg       зарегистрировать учётную запись Piwigo\n'
+        '  help / ?  эта справка')
+```
+
+### Хранилище
+
+Файл `piwigo.sqlite3`:
+
+```sql
+CREATE TABLE IF NOT EXISTS accounts (
+    jid  TEXT PRIMARY KEY,   -- bare JID владельца
+    host TEXT NOT NULL,      -- базовый URL галереи (scheme://netloc/path)
+    user TEXT NOT NULL,
+    pass TEXT NOT NULL
+);
+```
+
+Данные изолированы по `jid` (bare JID). Одна учётная запись на пользователя.
+
+### Команды и диалоги
+
+- Пустой ввод / `help` / `?` — справка `_help(jid)` (при наличии учётной записи
+  вместо `reg` показывается `unreg`).
+- `reg` — диалог регистрации (конечный автомат): поля `1. host`, `2. user`,
+  `3. pass`, `4. Сохранить`, `0. Отмена`. Сохранение проверяет логин
+  (`pwg.session.login`); при ошибке — сообщение и возврат в меню, запись не
+  создаётся. При успехе — `INSERT OR REPLACE` в `accounts`.
+- `unreg` — подтверждение (`1. Да` / `0. Отмена`) и удаление записи.
+  Без учётной записи — подсказка `reg`.
+- Любая строка, начинающаяся с `http://`/`https://` (`_URI_RE`) — загрузка
+  изображения. Без учётной записи — подсказка `reg`.
+
+### Загрузка изображения
+
+1. Имя файла по умолчанию — `_default_filename(url)`: `basename` пути URL,
+   `unquote`, затем `_clean_filename`.
+2. Меню: `1. Имя файла`, `2. Альбом`, `3. Сохранить`, `0. Отмена`.
+   - `_clean_filename` схлопывает пробелы, заменяет управляющие и
+     `" < > | : * ?` на `_`, отбрасывает каталоги и ограничивает длину
+     (`MAX_NAME_LEN = 180`, сохраняя расширение).
+   - `2` — `pwg.categories.getList` (`recursive=1`, `full_name=1`), плоский
+     список `_flatten_categories` с отступами по глубине; пустой список —
+     сообщение и возврат в меню.
+   - `3` — скачивание URL (`urllib`, `DOWNLOAD_TIMEOUT = 60`) и
+     `pwg.images.addSimple` (`UPLOAD_TIMEOUT = 120`). Ответ содержит
+     `image_id`/`url`; при отсутствии `url` формируется
+     `<host>/picture.php?id=<image_id>`.
+3. Сетевые операции выполняются в `asyncio.to_thread`, `_make_session(host)`
+   создаёт `_PiwigoSession` (cookie-jar, `User-Agent`).
+4. Ошибки оборачиваются в `PiwigoError` и возвращаются текстом
+   (`Ошибка загрузки: ...`); при неудаче состояние возвращается в меню.
+
+---
+
+## 17. Фоновые задачи
 
 | Задача | Период | Метод | Действие |
 |--------|--------|-------|----------|
@@ -1419,7 +1519,7 @@ WHERE remind_at <= now AND expires_at > now AND delivered_at IS NULL
 
 ---
 
-## 17. Конфигурация
+## 18. Конфигурация
 
 `config.ini` / `config.ini.example`:
 
@@ -1441,7 +1541,7 @@ TitleDefaultLength = 20
 
 ---
 
-## 18. Тестирование
+## 19. Тестирование
 
 `selftest.py` — автономный прогон без сети и без сервера. Структура:
 
@@ -1449,7 +1549,7 @@ TitleDefaultLength = 20
   копит имена в глобальный `FAILED`.
 - `main()` (async):
   - загрузка плагинов и проверка списка имён
-    `['isdown','note','ping','port','reminder','shorty','sslcheck','whoip','whois']`;
+    `['isdown','note','ping','piwigo','port','reminder','shorty','sslcheck','whoip','whois']`;
   - создание `Toolbox(...)` (без реального подключения) и проверка:
     - зарегистрированных ботов;
     - disco#items корня (все JID ботов);
@@ -1464,6 +1564,8 @@ TitleDefaultLength = 20
     ввода, HELP, парсинг), там где нужно — подменой данных в БД;
   - note/reminder — полные диалоги (создание, меню, поиск, пикеры, архив,
     re-arm, таймзона);
+  - XEP-0439 — проверка `Reply`/`help_reply`, наборов кнопок help и меню,
+    лимита `QUICK_MAX_ITEMS = 10` и прикрепления `<response/>` ядром;
   - `_fake_iq(iqtype, ns, to=None)` — строит слэк IQ для проверки
     version/uptime/vCard.
 - В конце: если `FAILED` — вывод списка и `sys.exit(1)`, иначе
@@ -1474,7 +1576,7 @@ TitleDefaultLength = 20
 
 ---
 
-## 19. Глоссарий
+## 20. Глоссарий
 
 | Термин | Значение |
 |--------|----------|
@@ -1491,7 +1593,7 @@ TitleDefaultLength = 20
 
 ---
 
-## 20. Известные согласования поведения (важные детали)
+## 21. Известные согласования поведения (важные детали)
 
 1. **`srch` регистронезависим и для кириллицы** — реализован сравнением в Python
    (`lower()`), так как SQLite не сворачивает регистр кириллицы.

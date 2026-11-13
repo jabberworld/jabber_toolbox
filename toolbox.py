@@ -153,10 +153,13 @@ class Toolbox(ComponentXMPP):
             name = self._display_name(bot)
             disco.add_identity(category='account', itype='generic',
                                name=name, jid=bot.jid)
-            for feature in ('jabber:iq:version', 'jabber:iq:last',
-                            'vcard-temp', 'urn:xmpp:time',
-                            'urn:xmpp:receipts',
-                            'http://jabber.org/protocol/chatstates'):
+            features = ('jabber:iq:version', 'jabber:iq:last',
+                        'vcard-temp', 'urn:xmpp:time',
+                        'urn:xmpp:receipts',
+                        'http://jabber.org/protocol/chatstates')
+            if getattr(bot, 'QUICK_RESPONSES', False):
+                features += (plugins_mod.QUICK_RESPONSE_NS,)
+            for feature in features:
                 disco.add_feature(feature, jid=bot.jid)
             disco.add_item(jid=bot.jid, name=name, ijid=root)
 
@@ -394,6 +397,26 @@ class Toolbox(ComponentXMPP):
         except Exception:
             return False
 
+    def _add_quick(self, reply, out):
+        """Attach XEP-0439 <response/> elements from a bot reply."""
+        responses = getattr(out, 'responses', None)
+        if not responses:
+            return
+        seen_values = set()
+        seen_labels = set()
+        for value, label in responses:
+            value = str(value)
+            label = str(label)
+            if not value or value in seen_values or label in seen_labels:
+                continue
+            seen_values.add(value)
+            seen_labels.add(label)
+            reply.xml.append(ET.Element('response', {
+                'xmlns': plugins_mod.QUICK_RESPONSE_NS,
+                'value': value,
+                'label': label,
+            }))
+
     async def _on_message(self, msg):
         if msg['type'] in ('groupchat', 'error'):
             return
@@ -425,7 +448,7 @@ class Toolbox(ComponentXMPP):
         ctx = {'from': msg['from'], 'to': msg['to']}
         try:
             if not body:
-                out = bot.HELP
+                out = bot.help_reply(ctx['from'].bare)
             else:
                 self._send_chat_state(bot, msg['from'], 'composing')
                 out = await bot.handle(body, ctx)
@@ -435,6 +458,7 @@ class Toolbox(ComponentXMPP):
                                           type(exc).__name__)
         reply = msg.reply()
         reply['body'] = out or bot.HELP
+        self._add_quick(reply, out)
         reply['chat_state'] = 'active'
         reply['request_receipt'] = True
         reply.send()

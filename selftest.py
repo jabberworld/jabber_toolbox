@@ -42,8 +42,8 @@ async def main():
     # --- plugin loading -------------------------------------------------
     bots = load_plugins(os.path.join(BASE_DIR, 'plugins'))
     names = sorted(b.NAME for b in bots)
-    check('plugins loaded', names == ['isdown', 'note', 'ping', 'port',
-                                      'reminder', 'shorty', 'sslcheck',
+    check('plugins loaded', names == ['isdown', 'note', 'ping', 'piwigo',
+                                      'port', 'reminder', 'shorty', 'sslcheck',
                                       'whoip', 'whois'], names)
     for bot in bots:
         check('bot %s: jid/desc/help' % bot.NAME,
@@ -56,8 +56,9 @@ async def main():
     xmpp = Toolbox(jid=ROOT, secret='x', host='127.0.0.1', port=5275)
     got = sorted(xmpp.bots)
     check('component registered bots', got == ['isdown', 'note', 'ping',
-                                                'port', 'reminder', 'shorty',
-                                                'sslcheck', 'whoip', 'whois'],
+                                                'piwigo', 'port', 'reminder',
+                                                'shorty', 'sslcheck', 'whoip',
+                                                'whois'],
           got)
     check('bot jids built',
           xmpp.bots['ping'].jid ==
@@ -88,6 +89,14 @@ async def main():
     check('bot identity name matches disco#item name',
           ('account', 'generic', None, expected_name) in pid
           and expected_name in item_names, (expected_name, item_names))
+
+    note_info = await disco.get_info('note@service2.ets.jabberworld.info')
+    check('quick-response feature on dialog bot',
+          'urn:xmpp:tmp:quick-response' in note_info['features'],
+          note_info['features'])
+    check('no quick-response feature on non-dialog bot',
+          'urn:xmpp:tmp:quick-response' not in ping_info['features'],
+          ping_info['features'])
 
     ver = xmpp['xep_0092']
     check('version responder',
@@ -452,6 +461,264 @@ async def main():
     check('sslcheck exact match rejects mismatch',
           not SSLCheck._check_hostname(cert_exact, 'baz.bar'))
 
+    # --- piwigo plugin -------------------------------------------------------
+    from plugins.piwigo import Piwigo, _default_filename, _clean_filename
+    pw = Piwigo()
+    pw_jid = 'piwigo@example.com'
+    pw_ctx = {'from': slixmpp.JID(pw_jid + '/res')}
+    pw.db.execute('DELETE FROM accounts WHERE jid=?', (pw_jid,))
+    pw.state.clear()
+
+    check('piwigo bot: jid/desc/help',
+          pw.NAME == 'piwigo' and 'Piwigo' in pw.DESCRIPTION
+          and 'reg' in pw.HELP.lower())
+
+    class _FakePiwigo:
+        """Fake Piwigo session: no network, canned data."""
+        def __init__(self, host, fail_login=False):
+            self.base = host
+            self.fail_login = fail_login
+            self.logins = []
+        def login(self, user, pw_pass):
+            self.logins.append(user)
+            if self.fail_login:
+                from plugins.piwigo import PiwigoError
+                raise PiwigoError('invalid credentials')
+        def fetch_albums(self, user, pw_pass):
+            if self.fail_login:
+                from plugins.piwigo import PiwigoError
+                raise PiwigoError('invalid credentials')
+            return [('1', 'Travel', 0), ('2', 'Travel / France', 1),
+                    ('3', 'Home', 0)]
+        def upload_from_url(self, url, filename, category, user, pw_pass):
+            if self.fail_login:
+                from plugins.piwigo import PiwigoError
+                raise PiwigoError('invalid credentials')
+            return ('42', 'https://gallery.example.com/picture.php?id=42')
+
+    pw._make_session = lambda host: _FakePiwigo(host)
+
+    check('piwigo default filename from url',
+          _default_filename('https://up.example.com/a/b/photo%20test.png?x=1')
+          == 'photo test.png')
+    check('piwigo clean filename strips path/specials',
+          _clean_filename('../a:b?"<c>.png') == 'a_b___c_.png'
+          and _clean_filename('') == '' and _clean_filename('  ') == '')
+
+    out = await pw.handle('help', pw_ctx)
+    check('piwigo help shows reg before registration',
+          'reg' in out and 'unreg' not in out, out)
+
+    out = await pw.handle('https://up.example.com/f/img.png', pw_ctx)
+    check('piwigo url without account hints reg', 'reg' in out, out)
+
+    out = await pw.handle('reg', pw_ctx)
+    check('piwigo reg menu opens',
+          'Host' in out and 'user' in out and 'pass' in out, out)
+    out = await pw.handle('1', pw_ctx)
+    check('piwigo reg prompts host', 'адрес' in out, out)
+    out = await pw.handle('https://gallery.example.com', pw_ctx)
+    check('piwigo reg host stored (menu shows it)',
+          'gallery.example.com' in out, out)
+    out = await pw.handle('1', pw_ctx)
+    out = await pw.handle('bad host!!!', pw_ctx)
+    check('piwigo reg rejects bad host', 'Некорректный' in out, out)
+    out = await pw.handle('https://gallery.example.com', pw_ctx)
+    out = await pw.handle('2', pw_ctx)
+    out = await pw.handle('admin', pw_ctx)
+    check('piwigo reg user stored', 'admin' in out, out)
+    out = await pw.handle('3', pw_ctx)
+    out = await pw.handle('secret', pw_ctx)
+    check('piwigo reg pass masked in menu',
+          '****' in out and 'secret' not in out, out)
+    out = await pw.handle('4', pw_ctx)
+    check('piwigo reg save verifies and stores account',
+          'Учётная запись сохранена' in out
+          and pw_jid not in pw.state, out)
+    row = pw.db.execute(
+        'SELECT host, user, pass FROM accounts WHERE jid=?',
+        (pw_jid,)).fetchone()
+    check('piwigo account row persisted',
+          row == ('https://gallery.example.com', 'admin', 'secret'), row)
+
+    out = await pw.handle('help', pw_ctx)
+    check('piwigo help shows unreg after registration',
+          'unreg' in out and 'зарегистрировать' not in out, out)
+    out = await pw.handle('reg', pw_ctx)
+    check('piwigo reg rejected when already registered',
+          'уже есть' in out, out)
+
+    pw._make_session = lambda host: _FakePiwigo(host, fail_login=True)
+    pw.state.clear()
+    pw.db.execute('DELETE FROM accounts WHERE jid=?', (pw_jid,))
+    await pw.handle('reg', pw_ctx)
+    await pw.handle('1', pw_ctx)
+    await pw.handle('https://gallery.example.com', pw_ctx)
+    await pw.handle('2', pw_ctx)
+    await pw.handle('admin', pw_ctx)
+    await pw.handle('3', pw_ctx)
+    await pw.handle('secret', pw_ctx)
+    out = await pw.handle('4', pw_ctx)
+    check('piwigo reg save reports login failure and keeps menu',
+          'Не удалось проверить' in out and 'Пароль: ****' in out, out)
+    row = pw.db.execute(
+        'SELECT host, user, pass FROM accounts WHERE jid=?',
+        (pw_jid,)).fetchone()
+    check('piwigo failed login not persisted', row is None, row)
+    out = await pw.handle('0', pw_ctx)
+    check('piwigo reg cancel clears state',
+          'Отменено' in out and pw_jid not in pw.state, out)
+
+    pw._make_session = lambda host: _FakePiwigo(host)
+    await pw.handle('reg', pw_ctx)
+    await pw.handle('1', pw_ctx)
+    await pw.handle('https://gallery.example.com', pw_ctx)
+    await pw.handle('2', pw_ctx)
+    await pw.handle('admin', pw_ctx)
+    await pw.handle('3', pw_ctx)
+    await pw.handle('secret', pw_ctx)
+    await pw.handle('4', pw_ctx)
+    check('piwigo re-registered for upload tests',
+          pw._account(pw_jid) is not None, pw._account(pw_jid))
+
+    out = await pw.handle('https://up.example.com/f/photo.jpg', pw_ctx)
+    check('piwigo upload menu with default filename',
+          'photo.jpg' in out and 'Сохранить' in out, out)
+
+    out = await pw.handle('1', pw_ctx)
+    out = await pw.handle('renamed.png', pw_ctx)
+    check('piwigo rename file', 'renamed.png' in out, out)
+    out = await pw.handle('2', pw_ctx)
+    check('piwigo album list', 'Travel' in out and 'Home' in out, out)
+    out = await pw.handle('9', pw_ctx)
+    check('piwigo album invalid number', 'Нет альбома' in out, out)
+    out = await pw.handle('1', pw_ctx)
+    check('piwigo album selected shown in menu',
+          'Travel' in out and 'Альбом' in out, out)
+    out = await pw.handle('3', pw_ctx)
+    check('piwigo upload returns internal link and clears state',
+          'picture.php?id=42' in out and 'renamed.png' in out
+          and pw_jid not in pw.state, out)
+
+    out = await pw.handle('https://up.example.com/f/photo.jpg', pw_ctx)
+    out = await pw.handle('0', pw_ctx)
+    check('piwigo upload cancel clears state',
+          'Отменено' in out and pw_jid not in pw.state, out)
+
+    out = await pw.handle('https://up.example.com/f/photo.jpg', pw_ctx)
+    out = await pw.handle('2', pw_ctx)
+    out = await pw.handle('0', pw_ctx)
+    check('piwigo album back returns to menu',
+          'Сохранить' in out and pw.state[pw_jid]['mode'] == 'menu', out)
+    await pw.handle('0', pw_ctx)
+
+    pw._make_session = lambda host: _FakePiwigo(host, fail_login=True)
+    out = await pw.handle('https://up.example.com/f/photo.jpg', pw_ctx)
+    out = await pw.handle('3', pw_ctx)
+    check('piwigo upload reports failure and keeps menu',
+          'Ошибка загрузки' in out
+          and pw.state[pw_jid]['mode'] == 'menu', out)
+    await pw.handle('0', pw_ctx)
+
+    out = await pw.handle('unreg', pw_ctx)
+    check('piwigo unreg asks confirmation', 'Удалить учётную запись' in out,
+          out)
+    out = await pw.handle('да', pw_ctx)
+    row = pw.db.execute(
+        'SELECT host, user, pass FROM accounts WHERE jid=?',
+        (pw_jid,)).fetchone()
+    check('piwigo unreg deletes account',
+          'удалена' in out and row is None, out)
+
+    out = await pw.handle('unreg', pw_ctx)
+    check('piwigo unreg without account hint', 'reg' in out, out)
+
+    pw.state.clear()
+    pw.db.execute('DELETE FROM accounts WHERE jid=?', (pw_jid,))
+
+    # --- XEP-0439 quick responses -----------------------------------------
+    from plugins import Reply, QUICK_MAX_ITEMS
+
+    def labels(out):
+        return [label for _, label in getattr(out, 'responses', [])]
+
+    qr_jid = 'qr-selftest@example.com'
+    qr_ctx = {'from': slixmpp.JID(qr_jid + '/res')}
+    nb = xmpp.bots['note']
+    rb = xmpp.bots['reminder']
+    sb = xmpp.bots['shorty']
+    for _bot in (nb, rb, pw):
+        _bot.state.clear()
+    nb.db.execute('DELETE FROM notes WHERE owner=?', (qr_jid,))
+    rb.db.execute('DELETE FROM reminders WHERE owner=?', (qr_jid,))
+    pw.db.execute('DELETE FROM accounts WHERE jid=?', (qr_jid,))
+
+    reply_probe = Reply('body', [('a', 'a')])
+    check('quick reply is str-compatible',
+          isinstance(reply_probe, str) and reply_probe == 'body'
+          and reply_probe.responses == [('a', 'a')], reply_probe.responses)
+
+    check('note help buttons',
+          labels(nb.help_reply(qr_jid)) == ['list', 'srch', 'help'])
+    check('reminder help buttons',
+          labels(rb.help_reply(qr_jid)) ==
+          ['list', 'arch', 'srch', 'help'])
+    check('shorty help buttons',
+          labels(sb.help_reply(qr_jid)) == ['conf', 'help'])
+    check('piwigo help buttons (no account)',
+          labels(pw.help_reply(qr_jid)) == ['reg', 'help'])
+    check('non-dialog bot has no buttons',
+          getattr(xmpp.bots['ping'].help_reply(qr_jid),
+                  'responses', None) is None)
+
+    for i in range(12):
+        await nb.handle('bulk note %d' % i, qr_ctx)
+    out = await nb.handle('list', qr_ctx)
+    check('note list caps buttons at %d' % QUICK_MAX_ITEMS,
+          labels(out) == [str(n) for n in range(12, 2, -1)], labels(out))
+    out = await nb.handle('12', qr_ctx)
+    check('note view buttons',
+          labels(out) == ['title', 'add', 'del', 'old', '0'], labels(out))
+    out = await nb.handle('3', qr_ctx)
+    check('note delete confirmation buttons',
+          labels(out) == ['1', '0'], labels(out))
+
+    out = await rb.handle('reminder reply body', qr_ctx)
+    check('reminder picker buttons',
+          labels(out) == ['1', '2', '3', '4', '5', '6', '7', '0'],
+          labels(out))
+    out = await rb.handle('7', qr_ctx)
+    check('reminder view buttons',
+          labels(out) == ['title', 'body', 'del', 'remind', 'old', '0'],
+          labels(out))
+    out = await rb.handle('list', qr_ctx)
+    check('reminder list buttons numbered', labels(out) == ['1'], labels(out))
+
+    out = await sb.handle('conf', qr_ctx)
+    check('shorty conf engine buttons',
+          labels(out) == [str(i) for i in range(1, 4)], labels(out))
+
+    pw.db.execute(
+        'INSERT OR REPLACE INTO accounts (jid, host, user, pass) '
+        'VALUES (?,?,?,?)',
+        (qr_jid, 'https://gallery.example.com', 'admin', 'secret'))
+    out = await pw.handle('https://up.example.com/f/photo.jpg', qr_ctx)
+    check('piwigo upload buttons',
+          labels(out) == ['name', 'album', 'save', '0'], labels(out))
+    await pw.handle('0', qr_ctx)
+    check('piwigo help buttons (account)',
+          labels(pw.help_reply(qr_jid)) == ['unreg', 'help'])
+    cats15 = [('id%d' % i, 'Album %d' % i, 0) for i in range(15)]
+    check('piwigo album buttons capped at %d + back' % QUICK_MAX_ITEMS,
+          labels(pw._fmt_albums(cats15)) ==
+          [str(i) for i in range(1, QUICK_MAX_ITEMS + 1)] + ['0'],
+          labels(pw._fmt_albums(cats15)))
+    pw.db.execute('DELETE FROM accounts WHERE jid=?', (qr_jid,))
+    nb.db.execute('DELETE FROM notes WHERE owner=?', (qr_jid,))
+    rb.db.execute('DELETE FROM reminders WHERE owner=?', (qr_jid,))
+    nb.state.clear()
+    rb.state.clear()
+
     # --- ad-hoc commands ---------------------------------------------------
     sent = []
     xmpp._request_subscription = lambda bot, user: sent.append(
@@ -650,6 +917,42 @@ async def main():
           and '<active xmlns="http://jabber.org/protocol/chatstates"'
           in bot_sent[-1],
           bot_sent[before:])
+
+    before = len(bot_sent)
+    await xmpp._on_message(make_msg(
+        'note@service2.ets.jabberworld.info', 'help'))
+    reply_xml = bot_sent[-1]
+    check('transport attaches quick responses',
+          len(bot_sent) == before + 2
+          and '<response xmlns="urn:xmpp:tmp:quick-response"' in reply_xml
+          and 'value="list"' in reply_xml
+          and 'label="list"' in reply_xml
+          and '<body>' in reply_xml,
+          reply_xml[:400])
+
+    before = len(bot_sent)
+    await xmpp._on_message(make_msg('note@service2.ets.jabberworld.info'))
+    check('empty input help carries quick responses',
+          len(bot_sent) == before + 1
+          and '<response xmlns="urn:xmpp:tmp:quick-response"' in bot_sent[-1],
+          bot_sent[-1][:300])
+
+    probe = slixmpp.stanza.Message(xml=None, stream=xmpp)
+    probe['to'] = 'probe@example.com'
+    xmpp._add_quick(probe, Reply(
+        'x', [('a', 'a'), ('a', 'dup'), ('b', 'a'), ('b', 'b')]))
+    probe_xml = str(probe)
+    check('quick responses deduplicated by value and label',
+          probe_xml.count('urn:xmpp:tmp:quick-response') == 2
+          and 'value="a"' in probe_xml and 'value="b"' in probe_xml,
+          probe_xml)
+
+    before = len(bot_sent)
+    await xmpp._on_message(make_msg(
+        'ping@service2.ets.jabberworld.info', '!!!'))
+    check('no quick responses for non-dialog bot',
+          'urn:xmpp:tmp:quick-response' not in bot_sent[-1],
+          bot_sent[-1][:200])
 
     # --- shorty config flow (no network) ----------------------------------
     shorty = xmpp.bots['shorty']

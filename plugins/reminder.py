@@ -6,7 +6,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone, timedelta
 
-from plugins import Bot, BASE_DIR
+from plugins import Bot, BASE_DIR, QUICK_MAX_ITEMS, Reply, numbered
 
 TITLE_MAX = 100
 
@@ -40,9 +40,19 @@ MENU_KEYS = {
 DEL_YES = ('да', 'yes', 'y', '1')
 DEL_NO = ('0', 'нет', 'no', 'n', 'выход', 'exit')
 
+HELP_RESPONSES = (('list', 'list'), ('arch', 'arch'), ('srch', 'srch'),
+                  ('help', 'help'))
+MENU_RESPONSES = (('title', 'title'), ('body', 'body'), ('del', 'del'),
+                  ('remind', 'remind'), ('old', 'old'), ('0', '0'))
+CONFIRM_RESPONSES = (('1', '1'), ('0', '0'))
+PICKER_RESPONSES = tuple((str(i), str(i)) for i in range(1, 8)) \
+    + (('0', '0'),)
+RELATIVE_RESPONSES = (('1', '1'), ('2', '2'), ('3', '3'), ('0', '0'))
+
 
 class Reminder(Bot):
     NAME = 'reminder'
+    QUICK_RESPONSES = True
     DESCRIPTION = ('Timed reminders. Send any text to save it as a '
                    'reminder, "list" to see your reminders, '
                    '"arch" for delivered ones.')
@@ -85,16 +95,19 @@ class Reminder(Bot):
         self.last_view = {}
         self.last_search = {}
 
+    def help_reply(self, jid):
+        return Reply(self.HELP, HELP_RESPONSES)
+
     async def handle(self, text, ctx):
         jid = ctx['from'].bare
         body = text.strip()
         if not body:
-            return self.HELP
+            return self.help_reply(jid)
 
         lowered = body.lower()
 
         if lowered in ('help', '?'):
-            return self.HELP
+            return self.help_reply(jid)
         if lowered == 'list':
             self.state.pop(jid, None)
             return self._list(jid)
@@ -213,14 +226,17 @@ class Reminder(Bot):
             return ('Напоминаний нет. Отправьте мне любой текст, чтобы '
                     'создать напоминание.')
         lines = ['Активные напоминания (ближайшие первые):']
+        responses = []
         for pos, (nid, title, created_ts, remind_at, expires_at) in \
                 enumerate(rows, 1):
             line = '%d. | %s | %s' % (pos,
                                        self._fmt(remind_at),
                                        title.replace('|', '/'))
             lines.append(line)
+            if len(responses) < QUICK_MAX_ITEMS:
+                responses.append((str(pos), str(pos)))
         lines.append('Отправьте номер, чтобы открыть напоминание.')
-        return '\n'.join(lines)
+        return Reply('\n'.join(lines), responses)
 
     def _open_by_number(self, jid, num):
         self._purge(jid)
@@ -255,14 +271,17 @@ class Reminder(Bot):
         if not rows:
             return 'Доставленных напоминаний нет.'
         lines = ['Доставленные напоминания (новые первые):']
+        responses = []
         for pos, (nid, title, created_ts, remind_at, expires_at,
                    delivered_at) in enumerate(rows, 1):
             line = '%d. | %s | %s' % (pos,
                                        self._fmt(delivered_at),
                                        title.replace('|', '/'))
             lines.append(line)
+            if len(responses) < QUICK_MAX_ITEMS:
+                responses.append((str(pos), str(pos)))
         lines.append('Отправьте номер, чтобы открыть напоминание.')
-        return '\n'.join(lines)
+        return Reply('\n'.join(lines), responses)
 
     def _search(self, jid, query):
         self._purge(jid)
@@ -311,7 +330,8 @@ class Reminder(Bot):
         lines.append('Отправьте номер, чтобы открыть напоминание.')
         self.last_view[jid] = 'srch'
         self.last_search[jid] = active_ids + delivered_ids
-        return '\n'.join(lines)
+        return Reply('\n'.join(lines),
+                     numbered(len(active_ids) + len(delivered_ids)))
 
     def _create(self, jid, body):
         from plugins import TITLE_DEFAULT_LEN
@@ -360,22 +380,23 @@ class Reminder(Bot):
         status = ''
         if delivered_at:
             status = '\nСтатус: доставлено %s' % self._fmt(delivered_at)
-        return ('Напоминание #%d «%s»\n'
-                'Создано: %s\n'
-                'Напомнить: %s\n'
-                'Хранится до: %s%s\n'
-                '%s\n'
-                '%s\n'
-                '%s\n'
-                '%s'
-                % (self._user_number(jid, nid), title.replace('|', '/'),
-                   self._fmt(created_ts),
-                   self._fmt(remind_at),
-                   self._fmt(expires_at), status,
-                   '-' * 30,
-                   body,
-                   '-' * 30,
-                   MENU_HINT))
+        return Reply('Напоминание #%d «%s»\n'
+                     'Создано: %s\n'
+                     'Напомнить: %s\n'
+                     'Хранится до: %s%s\n'
+                     '%s\n'
+                     '%s\n'
+                     '%s\n'
+                     '%s'
+                     % (self._user_number(jid, nid), title.replace('|', '/'),
+                        self._fmt(created_ts),
+                        self._fmt(remind_at),
+                        self._fmt(expires_at), status,
+                        '-' * 30,
+                        body,
+                        '-' * 30,
+                        MENU_HINT),
+                     MENU_RESPONSES)
 
     def _mode_menu(self, jid, st, body):
         action = MENU_KEYS.get(body.lower())
@@ -395,15 +416,16 @@ class Reminder(Bot):
                 return 'Напоминание не найдено.'
             self.state[jid] = {'mode': 'del', 'id': nid,
                                'creating': st.get('creating', False)}
-            return ('Удалить напоминание «%s»?\n'
-                    '1. Да\n'
-                    '0. Выход' % row[0].replace('|', '/'))
+            return Reply('Удалить напоминание «%s»?\n'
+                         '1. Да\n'
+                         '0. Выход' % row[0].replace('|', '/'),
+                         CONFIRM_RESPONSES)
         if action == 'remind':
             return self._enter_picker(jid, st, 'remind_at')
         if action == 'old':
             return self._enter_picker(jid, st, 'expires_at')
-        return ('Не понял. Доступно: 1|title, 2|body, 3|del, '
-                '4|remind, 5|old, 0 - выход.')
+        return Reply('Не понял. Доступно: 1|title, 2|body, 3|del, '
+                     '4|remind, 5|old, 0 - выход.', MENU_RESPONSES)
 
     # --- title / body / del -------------------------------------------------
 
@@ -445,7 +467,8 @@ class Reminder(Bot):
             return 'Напоминание удалено.'
         if lowered in DEL_NO:
             return self._view(jid, st['id'])
-        return 'Ответьте 1 (Да) или 0 (Выход): удалить напоминание?'
+        return Reply('Ответьте 1 (Да) или 0 (Выход): удалить напоминание?',
+                     CONFIRM_RESPONSES)
 
     # --- date/time picker ---------------------------------------------------
 
@@ -480,24 +503,25 @@ class Reminder(Bot):
             label = 'Срок хранения'
         title = ('Настройка: время напоминания' if target == 'remind_at'
                  else 'Настройка: срок хранения')
-        return ('%s\n'
-                'Текущее время: %s\n'
-                '%s: %04d-%02d-%02d %02d:%02d\n'
-                '%s\n'
-                '1. Год: %d\n'
-                '2. Месяц: %d\n'
-                '3. День: %d\n'
-                '4. Час: %d\n'
-                '5. Минута: %d\n'
-                '\n'
-                '6. Относительное время\n'
-                '\n'
-                '7. Сохранить\n'
-                '0. %s'
-                % (title, now_str, label, year, month, day, hour, minute,
-                   '-' * 30,
-                   year, month, day, hour, minute,
-                   'Удалить' if creating else 'Выход'))
+        return Reply('%s\n'
+                     'Текущее время: %s\n'
+                     '%s: %04d-%02d-%02d %02d:%02d\n'
+                     '%s\n'
+                     '1. Год: %d\n'
+                     '2. Месяц: %d\n'
+                     '3. День: %d\n'
+                     '4. Час: %d\n'
+                     '5. Минута: %d\n'
+                     '\n'
+                     '6. Относительное время\n'
+                     '\n'
+                     '7. Сохранить\n'
+                     '0. %s'
+                     % (title, now_str, label, year, month, day, hour, minute,
+                        '-' * 30,
+                        year, month, day, hour, minute,
+                        'Удалить' if creating else 'Выход'),
+                     PICKER_RESPONSES)
 
     def _mode_picker(self, jid, st, body):
         if body == '1':
@@ -603,13 +627,14 @@ class Reminder(Bot):
 
     def _fmt_relative(self, st):
         unit_label = RELATIVE_UNITS[st['rel_unit'] - 1][0]
-        return ('Относительное время:\n'
-                '1. Значение: %d\n'
-                '2. Единица: %s\n'
-                '\n'
-                '3. Сохранить\n'
-                '0. Назад'
-                % (st['rel_value'], unit_label))
+        return Reply('Относительное время:\n'
+                     '1. Значение: %d\n'
+                     '2. Единица: %s\n'
+                     '\n'
+                     '3. Сохранить\n'
+                     '0. Назад'
+                     % (st['rel_value'], unit_label),
+                     RELATIVE_RESPONSES)
 
     def _mode_relative(self, jid, st, body):
         if body == '1':
@@ -620,7 +645,7 @@ class Reminder(Bot):
             lines = ['Выберите единицу:']
             for idx, (label, _) in enumerate(RELATIVE_UNITS, 1):
                 lines.append('%d. %s' % (idx, label))
-            return '\n'.join(lines)
+            return Reply('\n'.join(lines), numbered(len(RELATIVE_UNITS)))
         if body == '3':
             return self._relative_save(jid, st)
         return self._fmt_relative(st)

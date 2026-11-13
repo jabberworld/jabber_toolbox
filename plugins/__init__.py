@@ -25,6 +25,12 @@ TZ_OFFSET = 0
 # Length of first line used for auto-generated title, set from config.ini.
 TITLE_DEFAULT_LEN = 20
 
+# XEP-0439 Quick Response namespace.
+QUICK_RESPONSE_NS = 'urn:xmpp:tmp:quick-response'
+
+# Maximum number of numbered entries rendered as quick-response buttons.
+QUICK_MAX_ITEMS = 10
+
 # Hostname or IPv4/IPv6 literal, safe to pass to external tools/sockets.
 _HOSTNAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9\-_]*[A-Za-z0-9])?'
                           r'(\.[A-Za-z0-9]([A-Za-z0-9\-_]*[A-Za-z0-9])?)*$')
@@ -100,12 +106,32 @@ async def check_tcp(host, port, family=socket.AF_UNSPEC, timeout=5.0):
         return False, elapsed, err
 
 
+class Reply(str):
+    """Reply text that may carry XEP-0439 quick responses.
+
+    Subclasses :class:`str` so existing code that treats a bot reply as
+    plain text keeps working unchanged.  ``responses`` is a list of
+    ``(value, label)`` tuples rendered as ``<response/>`` elements.
+    """
+
+    def __new__(cls, body, responses=()):
+        obj = super().__new__(cls, body)
+        obj.responses = list(responses)
+        return obj
+
+
+def numbered(count, limit=QUICK_MAX_ITEMS):
+    """Quick responses for a numbered list: first *limit* items."""
+    return [(str(i), str(i)) for i in range(1, min(count, limit) + 1)]
+
+
 class Bot:
     """Base class for all Toolbox bots."""
 
     NAME = ''          # local part of the bot JID and its nick
     DESCRIPTION = ''   # short description (vCard, service lists)
     HELP = ''          # usage hint sent on empty input
+    QUICK_RESPONSES = False  # emits XEP-0439 <response/> buttons
 
     def __init__(self):
         self.jid = ''
@@ -113,6 +139,10 @@ class Bot:
     @property
     def name(self):
         return self.NAME
+
+    def help_reply(self, jid):
+        """Return the help text (optionally a :class:`Reply` with buttons)."""
+        return self.HELP
 
     async def handle(self, text, ctx):
         """Process an incoming message body and return reply text."""

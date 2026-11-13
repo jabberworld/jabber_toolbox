@@ -5,7 +5,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone, timedelta
 
-from plugins import Bot, BASE_DIR
+from plugins import Bot, BASE_DIR, QUICK_MAX_ITEMS, Reply
 
 TITLE_MAX = 100
 
@@ -39,6 +39,11 @@ MENU_KEYS = {
     '0': 'exit', 'exit': 'exit', 'выход': 'exit', 'quit': 'exit',
 }
 
+HELP_RESPONSES = (('list', 'list'), ('srch', 'srch'), ('help', 'help'))
+MENU_RESPONSES = (('title', 'title'), ('add', 'add'), ('del', 'del'),
+                  ('old', 'old'), ('0', '0'))
+CONFIRM_RESPONSES = (('1', '1'), ('0', '0'))
+
 DEL_YES = ('да', 'yes', 'y', '1')
 DEL_NO = ('0', 'нет', 'no', 'n', 'выход', 'exit')
 CANCEL = ('0', 'отмена', 'cancel')
@@ -46,6 +51,7 @@ CANCEL = ('0', 'отмена', 'cancel')
 
 class Note(Bot):
     NAME = 'note'
+    QUICK_RESPONSES = True
     DESCRIPTION = ('Personal notes. Send any text to save it as a note, '
                    '"list" to see your notes.')
     HELP = ('Note bot - личные заметки.\n'
@@ -77,11 +83,14 @@ class Note(Bot):
             'ON notes (owner, created_ts)')
         self.state = {}
 
+    def help_reply(self, jid):
+        return Reply(self.HELP, HELP_RESPONSES)
+
     async def handle(self, text, ctx):
         jid = ctx['from'].bare
         body = text.strip()
         if not body:
-            return self.HELP
+            return self.help_reply(jid)
 
         st = self.state.get(jid)
         if st is not None:
@@ -97,7 +106,7 @@ class Note(Bot):
 
         lowered = body.lower()
         if lowered in ('help', '?'):
-            return self.HELP
+            return self.help_reply(jid)
         if lowered == 'list':
             return self._list(jid)
         if lowered == 'srch':
@@ -129,6 +138,7 @@ class Note(Bot):
             return ('Заметок нет. Отправьте мне любой текст, чтобы '
                     'сохранить заметку.')
         lines = ['Заметки (новые сверху):']
+        responses = []
         for pos, (nid, title, created_ts, expires_at) in enumerate(rows, 1):
             stable_num = len(rows) - pos + 1
             line = '%d. | %s | %s' % (stable_num,
@@ -137,8 +147,10 @@ class Note(Bot):
             if expires_at is not None:
                 line += ' | до %s' % self._fmt(expires_at)
             lines.append(line)
+            if len(responses) < QUICK_MAX_ITEMS:
+                responses.append((str(stable_num), str(stable_num)))
         lines.append('Отправьте номер, чтобы открыть заметку.')
-        return '\n'.join(lines)
+        return Reply('\n'.join(lines), responses)
 
     def _search(self, jid, query):
         self._purge(jid)
@@ -156,6 +168,7 @@ class Note(Bot):
         if not matched:
             return 'Ничего не найдено.'
         lines = ['Заметки с «%s»:' % query]
+        responses = []
         for stable_num, created_ts, title, expires_at in matched:
             line = '%d. | %s | %s' % (stable_num,
                                       self._fmt(created_ts),
@@ -163,8 +176,10 @@ class Note(Bot):
             if expires_at is not None:
                 line += ' | до %s' % self._fmt(expires_at)
             lines.append(line)
+            if len(responses) < QUICK_MAX_ITEMS:
+                responses.append((str(stable_num), str(stable_num)))
         lines.append('Отправьте номер, чтобы открыть заметку.')
-        return '\n'.join(lines)
+        return Reply('\n'.join(lines), responses)
 
     def _open_by_number(self, jid, num):
         self._purge(jid)
@@ -188,9 +203,11 @@ class Note(Bot):
         pos = self.db.execute(
             'SELECT COUNT(*) FROM notes WHERE owner=?',
             (jid,)).fetchone()[0]
-        return ('Заметка #%d сохранена.\nЗаголовок: %s\n'
-                'Отправьте list для списка или номер, чтобы открыть.'
-                % (pos, title))
+        return Reply(
+            'Заметка #%d сохранена.\nЗаголовок: %s\n'
+            'Отправьте list для списка или номер, чтобы открыть.'
+            % (pos, title),
+            ((str(pos), str(pos)), ('list', 'list')))
 
     # --- note view / menu ---------------------------------------------------
 
@@ -209,9 +226,10 @@ class Note(Bot):
         if expires_at is not None:
             meta += ', хранится до: %s' % self._fmt(expires_at)
         self.state[jid] = {'mode': 'menu', 'id': nid}
-        return ('Заметка #%s «%s»\n%s\n%s\n%s\n%s\n---\n%s'
-                % (nid, title, meta, '-' * 30,
-                   note_body, '-' * 30, MENU_HINT))
+        return Reply('Заметка #%s «%s»\n%s\n%s\n%s\n%s\n---\n%s'
+                     % (nid, title, meta, '-' * 30,
+                        note_body, '-' * 30, MENU_HINT),
+                     MENU_RESPONSES)
 
     def _mode_menu(self, jid, st, body):
         action = MENU_KEYS.get(body.lower())
@@ -228,20 +246,23 @@ class Note(Bot):
                 del self.state[jid]
                 return 'Заметка не найдена.'
             self.state[jid] = {'mode': 'del', 'id': nid}
-            return ('Удалить заметку «%s»?\n'
-                    '1. Да\n'
-                    '0. Выход' % row[0].replace('|', '/'))
+            return Reply('Удалить заметку «%s»?\n'
+                         '1. Да\n'
+                         '0. Выход' % row[0].replace('|', '/'),
+                         CONFIRM_RESPONSES)
         if action == 'old':
             self.state[jid] = {'mode': 'old', 'id': nid}
             lines = ['Выберите срок хранения:']
+            responses = []
             for idx, (label, _) in enumerate(EXPIRY_OPTIONS, 1):
                 lines.append('%d. %s' % (idx, label))
-            return '\n'.join(lines)
+                responses.append((str(idx), str(idx)))
+            return Reply('\n'.join(lines), responses)
         if action == 'exit':
             del self.state[jid]
             return self._list(jid)
-        return ('Не понял. Доступно: 1|title, 2|add, 3|del, 4|old, '
-                '0 - выход.')
+        return Reply('Не понял. Доступно: 1|title, 2|add, 3|del, 4|old, '
+                     '0 - выход.', MENU_RESPONSES)
 
     # --- sub-dialogs ----------------------------------------------------------
 
@@ -284,7 +305,8 @@ class Note(Bot):
             return 'Заметка удалена.'
         if lowered in DEL_NO:
             return self._view(jid, st['id'])
-        return ('Ответьте 1 (Да) или 0 (Выход): удалить заметку?')
+        return Reply('Ответьте 1 (Да) или 0 (Выход): удалить заметку?',
+                     CONFIRM_RESPONSES)
 
     def _mode_old(self, jid, st, body):
         if not body.isdigit() or not 1 <= int(body) <= len(EXPIRY_OPTIONS):

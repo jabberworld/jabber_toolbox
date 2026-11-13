@@ -8,7 +8,7 @@ import sqlite3
 import urllib.parse
 import urllib.request
 
-from plugins import Bot, BASE_DIR
+from plugins import Bot, BASE_DIR, Reply, numbered
 
 USER_AGENT = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/139.0 Safari/537.36 JabberToolbox')
@@ -74,6 +74,7 @@ _DOMAIN_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9.\-_]+(:\d+)?(/\S*)?$')
 
 class Shorty(Bot):
     NAME = 'shorty'
+    QUICK_RESPONSES = True
     DESCRIPTION = ('URL shortener. Send a link to shorten it or send '
                    '"conf" to choose a shortening engine.')
     HELP = ('Shorty bot - link shortener.\n'
@@ -100,10 +101,16 @@ class Shorty(Bot):
             return row[0]
         return DEFAULT_ENGINE
 
+    def help_reply(self, jid):
+        return Reply(self.HELP, (('conf', 'conf'), ('help', 'help')))
+
     async def handle(self, text, ctx):
         jid = ctx['from'].bare
         body = text.strip()
         lowered = body.lower()
+
+        if not body or lowered in ('help', '?'):
+            return self.help_reply(jid)
 
         if lowered == 'conf':
             self.pending.add(jid)
@@ -114,7 +121,7 @@ class Shorty(Bot):
                     mark = ' <- current'
                 lines.append('%d. %s%s' % (idx, ENGINES[key].label, mark))
             lines.append("Reply with a number to select an engine.")
-            return '\n'.join(lines)
+            return Reply('\n'.join(lines), numbered(len(ENGINES)))
 
         names = list(ENGINES)
         if jid in self.pending:
