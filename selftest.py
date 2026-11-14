@@ -637,10 +637,12 @@ async def main():
     pw.db.execute('DELETE FROM accounts WHERE jid=?', (pw_jid,))
 
     # --- XEP-0439 quick responses -----------------------------------------
-    from plugins import Reply, QUICK_MAX_ITEMS
+    from plugins import (Reply, QUICK_MAX_ITEMS, quick_label,
+                         resolve_responses)
 
-    def labels(out):
-        return [label for _, label in getattr(out, 'responses', [])]
+    def labels(out, lang='ru'):
+        return [label for _, label in resolve_responses(
+            getattr(out, 'responses', []), lang)]
 
     qr_jid = 'qr-selftest@example.com'
     qr_ctx = {'from': slixmpp.JID(qr_jid + '/res')}
@@ -653,20 +655,26 @@ async def main():
     rb.db.execute('DELETE FROM reminders WHERE owner=?', (qr_jid,))
     pw.db.execute('DELETE FROM accounts WHERE jid=?', (qr_jid,))
 
+    check('quick label map ru/en/numeric/fallback',
+          quick_label('title') == 'Заголовок'
+          and quick_label('title', 'en') == 'Title'
+          and quick_label('42') == '42'
+          and quick_label('unknown-token') == 'unknown-token')
+
     reply_probe = Reply('body', [('a', 'a')])
     check('quick reply is str-compatible',
           isinstance(reply_probe, str) and reply_probe == 'body'
           and reply_probe.responses == [('a', 'a')], reply_probe.responses)
 
     check('note help buttons',
-          labels(nb.help_reply(qr_jid)) == ['list', 'srch', 'help'])
+          labels(nb.help_reply(qr_jid)) == ['Список', 'Поиск', 'Справка'])
     check('reminder help buttons',
           labels(rb.help_reply(qr_jid)) ==
-          ['list', 'arch', 'srch', 'help'])
+          ['Список', 'Архив', 'Поиск', 'Справка'])
     check('shorty help buttons',
-          labels(sb.help_reply(qr_jid)) == ['conf', 'help'])
+          labels(sb.help_reply(qr_jid), 'en') == ['Engine', 'Help'])
     check('piwigo help buttons (no account)',
-          labels(pw.help_reply(qr_jid)) == ['reg', 'help'])
+          labels(pw.help_reply(qr_jid)) == ['Регистрация', 'Справка'])
     check('non-dialog bot has no buttons',
           getattr(xmpp.bots['ping'].help_reply(qr_jid),
                   'responses', None) is None)
@@ -678,25 +686,62 @@ async def main():
           labels(out) == [str(n) for n in range(12, 2, -1)], labels(out))
     out = await nb.handle('12', qr_ctx)
     check('note view buttons',
-          labels(out) == ['title', 'add', 'del', 'old', '0'], labels(out))
+          labels(out) == ['Заголовок', 'Добавить', 'Удалить', 'Срок',
+                          'Выход'], labels(out))
     out = await nb.handle('3', qr_ctx)
     check('note delete confirmation buttons',
-          labels(out) == ['1', '0'], labels(out))
+          labels(out) == ['Да', 'Выход'], labels(out))
+    out = await nb.handle('yes', qr_ctx)
+    check('note confirm accepts semantic yes', 'удалена' in out, out)
+    out = await nb.handle('11', qr_ctx)
+    out = await nb.handle('old', qr_ctx)
+    check('note expiry buttons use semantic keys',
+          labels(out) == ['1 ч', '6 ч', '12 ч', '1 д', '3 д', '1 нед',
+                          '2 нед', '1 мес', '3 мес', '6 мес', '1 год',
+                          'Никогда'], labels(out))
+    out = await nb.handle('1h', qr_ctx)
+    check('note expiry accepts semantic key',
+          nb.state[qr_jid]['mode'] == 'menu', nb.state[qr_jid]['mode'])
 
     out = await rb.handle('reminder reply body', qr_ctx)
     check('reminder picker buttons',
-          labels(out) == ['1', '2', '3', '4', '5', '6', '7', '0'],
-          labels(out))
-    out = await rb.handle('7', qr_ctx)
+          labels(out) == ['Год', 'Месяц', 'День', 'Час', 'Минута',
+                          'Через', 'Сохранить', 'Удалить'], labels(out))
+    out = await rb.handle('year', qr_ctx)
+    check('reminder picker accepts semantic year',
+          'Введите год' in out
+          and rb.state[qr_jid]['mode'] == 'picker_value', out)
+    await rb.handle('2030', qr_ctx)
+    out = await rb.handle('delete', qr_ctx)
+    check('reminder picker delete token removes reminder',
+          'удалено' in out.lower() and qr_jid not in rb.state, out)
+
+    out = await rb.handle('second reminder', qr_ctx)
+    out = await rb.handle('save', qr_ctx)
     check('reminder view buttons',
-          labels(out) == ['title', 'body', 'del', 'remind', 'old', '0'],
-          labels(out))
+          labels(out) == ['Заголовок', 'Текст', 'Удалить', 'Время', 'Срок',
+                          'Выход'], labels(out))
     out = await rb.handle('list', qr_ctx)
     check('reminder list buttons numbered', labels(out) == ['1'], labels(out))
+    out = await rb.handle('remind', qr_ctx)
+    out = await rb.handle('relative', qr_ctx)
+    check('reminder relative menu buttons',
+          labels(out) == ['Значение', 'Единица', 'Сохранить', 'Назад'],
+          labels(out))
+    out = await rb.handle('unit', qr_ctx)
+    check('reminder unit buttons',
+          labels(out) == ['Минута', 'Час', 'День', 'Неделя', 'Месяц',
+                          'Год'], labels(out))
+    await rb.handle('hour', qr_ctx)
+    check('reminder unit accepts semantic hour',
+          rb.state[qr_jid]['rel_unit'] == 2, rb.state[qr_jid]['rel_unit'])
+    out = await rb.handle('back', qr_ctx)
+    check('reminder relative back returns picker',
+          rb.state[qr_jid]['mode'] == 'picker', rb.state[qr_jid]['mode'])
 
     out = await sb.handle('conf', qr_ctx)
     check('shorty conf engine buttons',
-          labels(out) == [str(i) for i in range(1, 4)], labels(out))
+          labels(out, 'en') == [str(i) for i in range(1, 4)], labels(out))
 
     pw.db.execute(
         'INSERT OR REPLACE INTO accounts (jid, host, user, pass) '
@@ -704,15 +749,28 @@ async def main():
         (qr_jid, 'https://gallery.example.com', 'admin', 'secret'))
     out = await pw.handle('https://up.example.com/f/photo.jpg', qr_ctx)
     check('piwigo upload buttons',
-          labels(out) == ['name', 'album', 'save', '0'], labels(out))
-    await pw.handle('0', qr_ctx)
+          labels(out) == ['Файл', 'Альбом', 'Сохранить', 'Отмена'],
+          labels(out))
+    await pw.handle('cancel', qr_ctx)
+    check('piwigo upload cancel token clears state',
+          qr_jid not in pw.state, pw.state)
     check('piwigo help buttons (account)',
-          labels(pw.help_reply(qr_jid)) == ['unreg', 'help'])
+          labels(pw.help_reply(qr_jid)) == ['Отвязать', 'Справка'])
     cats15 = [('id%d' % i, 'Album %d' % i, 0) for i in range(15)]
     check('piwigo album buttons capped at %d + back' % QUICK_MAX_ITEMS,
           labels(pw._fmt_albums(cats15)) ==
-          [str(i) for i in range(1, QUICK_MAX_ITEMS + 1)] + ['0'],
+          [str(i) for i in range(1, QUICK_MAX_ITEMS + 1)] + ['Назад'],
           labels(pw._fmt_albums(cats15)))
+    pw.state[qr_jid] = {'mode': 'album', 'url': 'u', 'filename': 'f',
+                        'album_id': None, 'album_name': None, 'cats': cats15}
+    out = await pw.handle('back', qr_ctx)
+    check('piwigo album back token returns to menu',
+          pw.state[qr_jid]['mode'] == 'menu', pw.state[qr_jid]['mode'])
+    await pw.handle('cancel', qr_ctx)
+    out = await pw.handle('unreg', qr_ctx)
+    check('piwigo unreg confirmation buttons',
+          labels(out) == ['Да', 'Отмена'], labels(out))
+    await pw.handle('cancel', qr_ctx)
     pw.db.execute('DELETE FROM accounts WHERE jid=?', (qr_jid,))
     nb.db.execute('DELETE FROM notes WHERE owner=?', (qr_jid,))
     rb.db.execute('DELETE FROM reminders WHERE owner=?', (qr_jid,))
@@ -926,7 +984,7 @@ async def main():
           len(bot_sent) == before + 2
           and '<response xmlns="urn:xmpp:tmp:quick-response"' in reply_xml
           and 'value="list"' in reply_xml
-          and 'label="list"' in reply_xml
+          and 'label="Список"' in reply_xml
           and '<body>' in reply_xml,
           reply_xml[:400])
 
@@ -940,7 +998,8 @@ async def main():
     probe = slixmpp.stanza.Message(xml=None, stream=xmpp)
     probe['to'] = 'probe@example.com'
     xmpp._add_quick(probe, Reply(
-        'x', [('a', 'a'), ('a', 'dup'), ('b', 'a'), ('b', 'b')]))
+        'x', [('a', 'a'), ('a', 'dup'), ('b', 'a'), ('b', 'b')]),
+        xmpp.bots['note'])
     probe_xml = str(probe)
     check('quick responses deduplicated by value and label',
           probe_xml.count('urn:xmpp:tmp:quick-response') == 2

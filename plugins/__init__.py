@@ -31,6 +31,45 @@ QUICK_RESPONSE_NS = 'urn:xmpp:tmp:quick-response'
 # Maximum number of numbered entries rendered as quick-response buttons.
 QUICK_MAX_ITEMS = 10
 
+# Short, menu-independent quick-response labels keyed by stable command
+# tokens (see XEP-0439).  Numeric tokens are never translated.
+QUICK_LABELS = {
+    'ru': {
+        'list': 'Список', 'arch': 'Архив', 'srch': 'Поиск',
+        'help': 'Справка', 'title': 'Заголовок', 'add': 'Добавить',
+        'del': 'Удалить', 'delete': 'Удалить', 'body': 'Текст',
+        'remind': 'Время', 'old': 'Срок', 'host': 'Адрес',
+        'user': 'Логин', 'pass': 'Пароль', 'save': 'Сохранить',
+        'reg': 'Регистрация', 'unreg': 'Отвязать', 'conf': 'Настройки',
+        'name': 'Файл', 'album': 'Альбом', 'exit': 'Выход',
+        'cancel': 'Отмена', 'back': 'Назад', 'yes': 'Да',
+        'year': 'Год', 'month': 'Месяц', 'day': 'День',
+        'hour': 'Час', 'minute': 'Минута', 'relative': 'Через',
+        'value': 'Значение', 'unit': 'Единица', 'week': 'Неделя',
+        '1h': '1 ч', '6h': '6 ч', '12h': '12 ч',
+        '1d': '1 д', '3d': '3 д', '1w': '1 нед', '2w': '2 нед',
+        '1mo': '1 мес', '3mo': '3 мес', '6mo': '6 мес',
+        '1y': '1 год', 'never': 'Никогда',
+    },
+    'en': {
+        'list': 'List', 'arch': 'Archive', 'srch': 'Search',
+        'help': 'Help', 'title': 'Title', 'add': 'Add',
+        'del': 'Delete', 'delete': 'Delete', 'body': 'Text',
+        'remind': 'Time', 'old': 'Expiry', 'host': 'Host',
+        'user': 'User', 'pass': 'Password', 'save': 'Save',
+        'reg': 'Register', 'unreg': 'Unregister', 'conf': 'Engine',
+        'name': 'Name', 'album': 'Album', 'exit': 'Exit',
+        'cancel': 'Cancel', 'back': 'Back', 'yes': 'Yes',
+        'year': 'Year', 'month': 'Month', 'day': 'Day',
+        'hour': 'Hour', 'minute': 'Minute', 'relative': 'Relative',
+        'value': 'Value', 'unit': 'Unit', 'week': 'Week',
+        '1h': '1 h', '6h': '6 h', '12h': '12 h',
+        '1d': '1 d', '3d': '3 d', '1w': '1 w', '2w': '2 w',
+        '1mo': '1 mo', '3mo': '3 mo', '6mo': '6 mo',
+        '1y': '1 y', 'never': 'Never',
+    },
+}
+
 # Hostname or IPv4/IPv6 literal, safe to pass to external tools/sockets.
 _HOSTNAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9\-_]*[A-Za-z0-9])?'
                           r'(\.[A-Za-z0-9]([A-Za-z0-9\-_]*[A-Za-z0-9])?)*$')
@@ -125,6 +164,36 @@ def numbered(count, limit=QUICK_MAX_ITEMS):
     return [(str(i), str(i)) for i in range(1, min(count, limit) + 1)]
 
 
+def quick_label(token, lang='ru'):
+    """Short menu-independent label for a quick-response command token."""
+    token = str(token)
+    if token.isdigit():
+        return token
+    return QUICK_LABELS.get(lang, {}).get(token, token)
+
+
+def resolve_responses(responses, lang='ru'):
+    """Resolve ``(value, label)`` pairs into final, deduplicated labels.
+
+    A label equal to its value is replaced by :func:`quick_label`; any
+    explicitly different label is kept as an override.
+    """
+    result = []
+    seen_values = set()
+    seen_labels = set()
+    for value, label in responses:
+        value = str(value)
+        label = str(label)
+        if label == value:
+            label = quick_label(value, lang)
+        if not value or value in seen_values or label in seen_labels:
+            continue
+        seen_values.add(value)
+        seen_labels.add(label)
+        result.append((value, label))
+    return result
+
+
 class Bot:
     """Base class for all Toolbox bots."""
 
@@ -132,6 +201,7 @@ class Bot:
     DESCRIPTION = ''   # short description (vCard, service lists)
     HELP = ''          # usage hint sent on empty input
     QUICK_RESPONSES = False  # emits XEP-0439 <response/> buttons
+    QUICK_LANG = 'ru'  # label language for quick responses
 
     def __init__(self):
         self.jid = ''

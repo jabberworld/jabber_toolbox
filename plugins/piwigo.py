@@ -26,10 +26,10 @@ DEL_YES = ('да', 'yes', 'y', '1')
 DEL_NO = ('0', 'нет', 'no', 'n', 'выход', 'exit')
 
 REG_RESPONSES = (('host', 'host'), ('user', 'user'), ('pass', 'pass'),
-                 ('save', 'save'), ('0', '0'))
+                 ('save', 'save'), ('cancel', 'cancel'))
 UPLOAD_RESPONSES = (('name', 'name'), ('album', 'album'), ('save', 'save'),
-                    ('0', '0'))
-CONFIRM_RESPONSES = (('1', '1'), ('0', '0'))
+                    ('cancel', 'cancel'))
+CONFIRM_RESPONSES = (('yes', 'yes'), ('cancel', 'cancel'))
 
 _URI_RE = re.compile(r'^https?://\S+$', re.IGNORECASE)
 
@@ -283,7 +283,8 @@ class Piwigo(Bot):
         lowered = body.lower()
         st = self.state.get(jid)
         if st is not None:
-            if lowered in ('0', 'отмена', 'cancel', 'выход', 'exit'):
+            if lowered in ('0', 'отмена', 'cancel', 'выход', 'exit',
+                           'back'):
                 return self._cancel(jid, st)
             handler = getattr(self, '_mode_' + st['mode'], None)
             if handler is not None:
@@ -473,7 +474,7 @@ class Piwigo(Bot):
             lines.append('%d. %s%s' % (idx, '  ' * depth,
                                        label.replace('|', '/')))
         lines.append('0. Назад')
-        return Reply('\n'.join(lines), numbered(len(cats)) + [('0', '0')])
+        return Reply('\n'.join(lines), numbered(len(cats)) + [('back', 'back')])
 
     def _pick_album(self, jid, st):
         acc = self._account(jid)

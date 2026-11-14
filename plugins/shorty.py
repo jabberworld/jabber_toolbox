@@ -75,6 +75,7 @@ _DOMAIN_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9.\-_]+(:\d+)?(/\S*)?$')
 class Shorty(Bot):
     NAME = 'shorty'
     QUICK_RESPONSES = True
+    QUICK_LANG = 'en'
     DESCRIPTION = ('URL shortener. Send a link to shorten it or send '
                    '"conf" to choose a shortening engine.')
     HELP = ('Shorty bot - link shortener.\n'

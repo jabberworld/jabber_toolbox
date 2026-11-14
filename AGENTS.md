@@ -88,10 +88,16 @@ class Bot:
 
 - `Reply(str)` — строка-ответ с необязательными `responses` (пары
   `(value, label)`) для кнопок XEP-0439 (`urn:xmpp:tmp:quick-response`).
-  Ядро (`Toolbox._add_quick`) добавляет `<response/>` к исходящему сообщению,
-  дедуплицируя по `value`/`label`; текст `<body>` не меняется.
+  Ядро (`Toolbox._add_quick`) разрешает подписи через
+  `resolve_responses(..., bot.QUICK_LANG)` и добавляет `<response/>` к
+  исходящему сообщению; текст `<body>` не меняется.
+- `QUICK_LABELS` / `quick_label(token, lang)` — централизованный маппинг
+  «токен → короткая подпись» (ru/en). Подпись не зависит от меню; числа
+  остаются числами.
+- `Bot.QUICK_LANG` — язык подписей бота (`ru` по умолчанию, `en` у shorty).
 - `numbered(count)` — пары `(N, N)` для первых `QUICK_MAX_ITEMS = 10` пунктов.
-- `label` = короткая команда, если есть, иначе номер пункта.
+- Меню используют семантические токены (`year`, `hour`, `1h`, `yes`, `exit`,
+  `cancel`, `back`, ...); обработчики принимают и токен, и номер.
 
 Загрузчик `load_plugins(directory)`:
 - импортирует каждый `*.py`, не начинающийся с `_`;

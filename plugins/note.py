@@ -24,6 +24,9 @@ EXPIRY_OPTIONS = (
     ('Никогда', None),
 )
 
+EXPIRY_KEYS = ('1h', '6h', '12h', '1d', '3d', '1w', '2w',
+               '1mo', '3mo', '6mo', '1y', 'never')
+
 MENU_HINT = ('Операции:\n'
              '1. title - задать заголовок заметки\n'
              '2. add - добавить текст к заметке\n'
@@ -41,8 +44,8 @@ MENU_KEYS = {
 
 HELP_RESPONSES = (('list', 'list'), ('srch', 'srch'), ('help', 'help'))
 MENU_RESPONSES = (('title', 'title'), ('add', 'add'), ('del', 'del'),
-                  ('old', 'old'), ('0', '0'))
-CONFIRM_RESPONSES = (('1', '1'), ('0', '0'))
+                  ('old', 'old'), ('exit', 'exit'))
+CONFIRM_RESPONSES = (('yes', 'yes'), ('exit', 'exit'))
 
 DEL_YES = ('да', 'yes', 'y', '1')
 DEL_NO = ('0', 'нет', 'no', 'n', 'выход', 'exit')
@@ -253,11 +256,10 @@ class Note(Bot):
         if action == 'old':
             self.state[jid] = {'mode': 'old', 'id': nid}
             lines = ['Выберите срок хранения:']
-            responses = []
             for idx, (label, _) in enumerate(EXPIRY_OPTIONS, 1):
                 lines.append('%d. %s' % (idx, label))
-                responses.append((str(idx), str(idx)))
-            return Reply('\n'.join(lines), responses)
+            return Reply('\n'.join(lines),
+                         [(key, key) for key in EXPIRY_KEYS])
         if action == 'exit':
             del self.state[jid]
             return self._list(jid)
@@ -309,9 +311,14 @@ class Note(Bot):
                      CONFIRM_RESPONSES)
 
     def _mode_old(self, jid, st, body):
-        if not body.isdigit() or not 1 <= int(body) <= len(EXPIRY_OPTIONS):
+        key = body.strip().lower()
+        if key in EXPIRY_KEYS:
+            idx = EXPIRY_KEYS.index(key)
+        elif key.isdigit() and 1 <= int(key) <= len(EXPIRY_OPTIONS):
+            idx = int(key) - 1
+        else:
             return 'Выберите номер варианта от 1 до %d.' % len(EXPIRY_OPTIONS)
-        label, delta = EXPIRY_OPTIONS[int(body) - 1]
+        label, delta = EXPIRY_OPTIONS[idx]
         expires_at = None if delta is None else int(time.time()) + delta
         cur = self.db.execute(
             'UPDATE notes SET expires_at=? WHERE id=? AND owner=?',

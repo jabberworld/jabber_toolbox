@@ -397,20 +397,13 @@ class Toolbox(ComponentXMPP):
         except Exception:
             return False
 
-    def _add_quick(self, reply, out):
+    def _add_quick(self, reply, out, bot):
         """Attach XEP-0439 <response/> elements from a bot reply."""
         responses = getattr(out, 'responses', None)
         if not responses:
             return
-        seen_values = set()
-        seen_labels = set()
-        for value, label in responses:
-            value = str(value)
-            label = str(label)
-            if not value or value in seen_values or label in seen_labels:
-                continue
-            seen_values.add(value)
-            seen_labels.add(label)
+        lang = getattr(bot, 'QUICK_LANG', 'ru')
+        for value, label in plugins_mod.resolve_responses(responses, lang):
             reply.xml.append(ET.Element('response', {
                 'xmlns': plugins_mod.QUICK_RESPONSE_NS,
                 'value': value,
@@ -458,7 +451,7 @@ class Toolbox(ComponentXMPP):
                                           type(exc).__name__)
         reply = msg.reply()
         reply['body'] = out or bot.HELP
-        self._add_quick(reply, out)
+        self._add_quick(reply, out, bot)
         reply['chat_state'] = 'active'
         reply['request_receipt'] = True
         reply.send()

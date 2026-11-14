@@ -43,11 +43,26 @@ DEL_NO = ('0', 'нет', 'no', 'n', 'выход', 'exit')
 HELP_RESPONSES = (('list', 'list'), ('arch', 'arch'), ('srch', 'srch'),
                   ('help', 'help'))
 MENU_RESPONSES = (('title', 'title'), ('body', 'body'), ('del', 'del'),
-                  ('remind', 'remind'), ('old', 'old'), ('0', '0'))
-CONFIRM_RESPONSES = (('1', '1'), ('0', '0'))
-PICKER_RESPONSES = tuple((str(i), str(i)) for i in range(1, 8)) \
-    + (('0', '0'),)
-RELATIVE_RESPONSES = (('1', '1'), ('2', '2'), ('3', '3'), ('0', '0'))
+                  ('remind', 'remind'), ('old', 'old'), ('exit', 'exit'))
+CONFIRM_RESPONSES = (('yes', 'yes'), ('exit', 'exit'))
+PICKER_FIELDS = ('year', 'month', 'day', 'hour', 'minute', 'relative', 'save')
+RELATIVE_RESPONSES = (('value', 'value'), ('unit', 'unit'),
+                      ('save', 'save'), ('back', 'back'))
+PICKER_ALIASES = {
+    '1': 'year', 'year': 'year', '2': 'month', 'month': 'month',
+    '3': 'day', 'day': 'day', '4': 'hour', 'hour': 'hour',
+    '5': 'minute', 'minute': 'minute', '6': 'relative',
+    'relative': 'relative', '7': 'save', 'save': 'save',
+}
+RELATIVE_ALIASES = {
+    '1': 'value', 'value': 'value', '2': 'unit', 'unit': 'unit',
+    '3': 'save', 'save': 'save',
+}
+UNIT_ALIASES = {
+    '1': 1, 'minute': 1, '2': 2, 'hour': 2, '3': 3, 'day': 3,
+    '4': 4, 'week': 4, '5': 5, 'month': 5, '6': 6, 'year': 6,
+}
+UNIT_KEYS = ('minute', 'hour', 'day', 'week', 'month', 'year')
 
 
 class Reminder(Bot):
@@ -123,7 +138,8 @@ class Reminder(Bot):
 
         st = self.state.get(jid)
         if st is not None:
-            if lowered in ('0', 'отмена', 'cancel', 'выход', 'exit'):
+            if lowered in ('0', 'отмена', 'cancel', 'выход', 'exit',
+                           'delete'):
                 return self._handle_cancel(jid, st)
             if lowered in ('назад', 'back') and st['mode'] in (
                     'relative', 'relative_value', 'relative_unit'):
@@ -503,6 +519,9 @@ class Reminder(Bot):
             label = 'Срок хранения'
         title = ('Настройка: время напоминания' if target == 'remind_at'
                  else 'Настройка: срок хранения')
+        zero = 'delete' if creating else 'exit'
+        responses = [(field, field) for field in PICKER_FIELDS]
+        responses.append((zero, zero))
         return Reply('%s\n'
                      'Текущее время: %s\n'
                      '%s: %04d-%02d-%02d %02d:%02d\n'
@@ -521,35 +540,20 @@ class Reminder(Bot):
                         '-' * 30,
                         year, month, day, hour, minute,
                         'Удалить' if creating else 'Выход'),
-                     PICKER_RESPONSES)
+                     responses)
 
     def _mode_picker(self, jid, st, body):
-        if body == '1':
+        command = PICKER_ALIASES.get(body.strip().lower())
+        if command in ('year', 'month', 'day', 'hour', 'minute'):
             self.state[jid] = {**st, 'mode': 'picker_value',
-                               'field': 'year'}
-            return 'Введите год (2024-2099):'
-        if body == '2':
-            self.state[jid] = {**st, 'mode': 'picker_value',
-                               'field': 'month'}
-            return 'Введите месяц (1-12):'
-        if body == '3':
-            self.state[jid] = {**st, 'mode': 'picker_value',
-                               'field': 'day'}
-            return 'Введите день (1-31):'
-        if body == '4':
-            self.state[jid] = {**st, 'mode': 'picker_value',
-                               'field': 'hour'}
-            return 'Введите час (0-23):'
-        if body == '5':
-            self.state[jid] = {**st, 'mode': 'picker_value',
-                               'field': 'minute'}
-            return 'Введите минуту (0-59):'
-        if body == '6':
+                               'field': command}
+            return self._picker_value_prompt(command)
+        if command == 'relative':
             new_st = {**st, 'mode': 'relative',
                       'rel_value': 1, 'rel_unit': 1}
             self.state[jid] = new_st
             return self._fmt_relative(new_st)
-        if body == '7':
+        if command == 'save':
             return self._picker_save(jid, st)
         return 'Введите номер пункта от 1 до 7 (0 - выход).'
 
@@ -637,16 +641,18 @@ class Reminder(Bot):
                      RELATIVE_RESPONSES)
 
     def _mode_relative(self, jid, st, body):
-        if body == '1':
+        command = RELATIVE_ALIASES.get(body.strip().lower())
+        if command == 'value':
             self.state[jid] = {**st, 'mode': 'relative_value'}
             return 'Введите значение (1-1000):'
-        if body == '2':
+        if command == 'unit':
             self.state[jid] = {**st, 'mode': 'relative_unit'}
             lines = ['Выберите единицу:']
             for idx, (label, _) in enumerate(RELATIVE_UNITS, 1):
                 lines.append('%d. %s' % (idx, label))
-            return Reply('\n'.join(lines), numbered(len(RELATIVE_UNITS)))
-        if body == '3':
+            return Reply('\n'.join(lines),
+                         [(key, key) for key in UNIT_KEYS])
+        if command == 'save':
             return self._relative_save(jid, st)
         return self._fmt_relative(st)
 
@@ -659,10 +665,11 @@ class Reminder(Bot):
         return self._fmt_relative(new_st)
 
     def _mode_relative_unit(self, jid, st, body):
-        if not body.isdigit() or not 1 <= int(body) <= len(RELATIVE_UNITS):
+        unit = UNIT_ALIASES.get(body.strip().lower())
+        if unit is None:
             return ('Выберите номер единицы от 1 до %d.'
                     % len(RELATIVE_UNITS))
-        new_st = {**st, 'mode': 'relative', 'rel_unit': int(body)}
+        new_st = {**st, 'mode': 'relative', 'rel_unit': unit}
         self.state[jid] = new_st
         return self._fmt_relative(new_st)
 
